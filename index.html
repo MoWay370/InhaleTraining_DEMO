@@ -146,13 +146,16 @@ addEventListener("keyup", e=>{ if(e.key==="ArrowUp")upDown=false; if(e.key==="Ar
 
 // ---------- 取樣即時輸入 ----------
 // 方向鎖定機制:裝置端每一幀的判定容易抖動(尤其在門檻附近),
-// 所以不逐幀直接採用,而是在一口氣剛開始的 0.5 秒內收集樣本做多數決,
-// 鎖定後整口氣都維持同一個方向,直到訊號降回安靜狀態才解鎖、準備判定下一口氣。
-const DIR_LOCK_WINDOW = 0.5;   // 累積多久做一次多數決(秒)
+// 所以不逐幀直接採用。實測發現吸氣訊號比較容易被判定到、吐氣容易被蓋過去,
+// 所以規則改成:1 秒內只要出現任一幀吐氣,就立刻鎖定吐氣;
+// 完全沒偵測到吐氣、滿 1 秒了才鎖定吸氣。鎖定後整口氣維持同一個方向,
+// 直到訊號降回安靜狀態才解鎖、準備判定下一口氣。
+const DIR_LOCK_WINDOW = 1.0;   // 這口氣最多等多久做判定(秒)
 const QUIET_RESET_DELAY = 0.15; // 訊號降到安靜後,等多久才真正重置(避免瞬間掉值誤判成換氣)
 
 let dirBuffer = [];      // { t, direction } 這口氣目前收集到的樣本
 let lockedDir = null;    // 這口氣鎖定後的方向,null 代表還沒鎖定或正在安靜狀態
+let breathStartT = null; // 這口氣開始的時間點,null 代表還沒開始
 let quietSince = null;   // 開始安靜的時間點,null 代表目前還是 active
 
 function sample(now, dt){
@@ -162,7 +165,7 @@ function sample(now, dt){
 
   // 鍵盤試玩:維持原本的即時判斷,不套用鎖定邏輯(本來就是二選一,不會抖動)
   if(upFlow>1 || dnFlow>1){
-    dirBuffer=[]; lockedDir=null; quietSince=null; // 鍵盤操作時,裝置端的鎖定狀態一併重置
+    dirBuffer=[]; lockedDir=null; breathStartT=null; quietSince=null;
     let flow, direction;
     if(upFlow>=dnFlow){ flow=upFlow; direction="inhalation"; }
     else { flow=dnFlow; direction="exhalation"; }
@@ -177,39 +180,32 @@ function sample(now, dt){
     if(a.active){
       quietSince=null; // 還在吹,取消安靜計時
       if(lockedDir===null){
+        if(breathStartT===null) breathStartT=now;
         dirBuffer.push({t:now, direction:a.direction});
-        dirBuffer=dirBuffer.filter(d=> now-d.t <= DIR_LOCK_WINDOW);
-        const spanStart = dirBuffer.length? dirBuffer[0].t : now;
-        if(now - spanStart >= DIR_LOCK_WINDOW){
-          // 累積夠久了,多數決鎖定這口氣的方向
-          let inhCount=0, exhCount=0;
-          for(const d of dirBuffer){ if(d.direction==="inhalation") inhCount++; else exhCount++; }
-          lockedDir = inhCount>=exhCount ? "inhalation" : "exhalation";
+        if(a.direction==="exhalation"){
+          // 只要出現一幀吐氣,不用等滿 1 秒,立刻鎖定吐氣
+          lockedDir="exhalation";
+        } else if(now - breathStartT >= DIR_LOCK_WINDOW){
+          // 滿 1 秒都沒偵測到任何吐氣,鎖定吸氣
+          lockedDir="inhalation";
         }
       }
-      // 鎖定前:用目前緩衝區的多數決當暫定方向,讓遊戲畫面不會出現空白/閃爍
-      // 鎖定後:整口氣固定用 lockedDir,不再逐幀改變
-      let direction;
-      if(lockedDir!==null){ direction=lockedDir; }
-      else{
-        let inhCount=0, exhCount=0;
-        for(const d of dirBuffer){ if(d.direction==="inhalation") inhCount++; else exhCount++; }
-        direction = inhCount>=exhCount ? "inhalation" : "exhalation";
-      }
+      // 鎖定前:暫時顯示目前這一幀的判定,讓畫面不會空白;鎖定後固定用 lockedDir
+      const direction = lockedDir!==null ? lockedDir : a.direction;
       const flow=a.flow;
       const signed = direction==="inhalation"? flow : -flow;
       return { flow, direction, active:true, signed, now, dt };
     } else {
       // 訊號降到安靜:先等一小段時間(避免瞬間掉值誤判),再真正重置成『下一口氣還沒開始』
       if(quietSince===null) quietSince=now;
-      if(now - quietSince >= QUIET_RESET_DELAY){ dirBuffer=[]; lockedDir=null; }
+      if(now - quietSince >= QUIET_RESET_DELAY){ dirBuffer=[]; lockedDir=null; breathStartT=null; }
       return { flow:0, direction:null, active:false, signed:0, now, dt };
     }
   }
 
   // 沒有裝置也沒按鍵:安靜狀態
   if(quietSince===null) quietSince=now;
-  if(now - quietSince >= QUIET_RESET_DELAY){ dirBuffer=[]; lockedDir=null; }
+  if(now - quietSince >= QUIET_RESET_DELAY){ dirBuffer=[]; lockedDir=null; breathStartT=null; }
   return { flow:0, direction:null, active:false, signed:0, now, dt };
 }
 
