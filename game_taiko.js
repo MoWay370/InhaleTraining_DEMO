@@ -34,19 +34,14 @@ const GAUGE_CLEAR = 80;
 // ---------------------------------------------------------------------
 function buildChart(){
   const notes = [];
-  let t = 1.2;
+  let t = 0.5;
 
-  // 第一段:點狀熱身(只留 2 個,吐氣、吸氣各一次)
-  notes.push({type:"point", kind:"exhale", t}); t += 1.6;
-  notes.push({type:"point", kind:"inhale", t}); t += 1.8;
+  // 熱身:壓縮到 3 秒內,只留 1 個點狀 + 1 個短長條意思一下
+  notes.push({type:"point", kind:"exhale", t}); t += 0.9;
+  notes.push({type:"hold", kind:"inhale", t, dur:0.9, end:t+0.9, holdHit:0, judged:null});
+  t += 0.9 + 0.3; // 熱身結束時落在 3 秒內
 
-  // 第二段:節奏熱身(只留 2 個長條,簡單帶過)
-  notes.push({type:"hold", kind:"inhale", t, dur:1.8, end:t+1.8, holdHit:0, judged:null});
-  t += 1.8 + 1.2;
-  notes.push({type:"hold", kind:"exhale", t, dur:2.0, end:t+2.0, holdHit:0, judged:null});
-  t += 2.0 + 1.6;
-
-  // 第三段:氣球挑戰為主 —— 吐氣一輪、吸氣一輪
+  // 主要內容:氣球挑戰為主 —— 吐氣一輪、吸氣一輪
   notes.push({type:"balloon", kind:"exhale", t, dur:9, fill:0, judged:null});
   t += 9 + 1.6;
   notes.push({type:"balloon", kind:"inhale", t, dur:9, fill:0, judged:null});
