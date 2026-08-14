@@ -1,5 +1,5 @@
 // 吹氣球 — 持久穩定吐氣(耐力)。穩穩地把氣持續吐出去,讓氣球越吹越大,撐住就放飛。
-const P = { ONSET:8, LO:10, HI:150, FILL_BASE:0.65, FILL_MAX:1.6, LEAK:0.16, HOLD_TARGET:1.0,
+const P = { ONSET:8, LO:10, HI:150, FILL_BASE:1, FILL_MAX:3, LEAK:0.1, HOLD_TARGET:1.0,
   WIN_SIZE:1.0, GENTLE:0.6 };
 
 let S;
