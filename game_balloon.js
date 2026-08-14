@@ -1,5 +1,5 @@
 // 吹氣球 — 持久穩定吐氣(耐力)。穩穩地把氣持續吐出去,讓氣球越吹越大,撐住就放飛。
-const P = { ONSET:8, LO:10, HI:150, FILL_BASE:0.6, FILL_MAX:2, LEAK:0.1, HOLD_TARGET:1.0,
+const P = { ONSET:8, LO:10, HI:150, FILL_BASE:0.5, FILL_MAX:4, LEAK:0.1, HOLD_TARGET:1.0,
   WIN_SIZE:1.0, GENTLE:0.6, SMOOTH_TAU:0.25 };
 // SMOOTH_TAU:flow 平滑化的時間常數(秒)。數字越大,反應越慢、越平滑;
 // 數字越小,越接近原始逐幀數值。只有氣球用這個平滑,憤怒鳥不套用。
