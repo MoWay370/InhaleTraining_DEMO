@@ -138,6 +138,13 @@ addEventListener("keydown", e=>{ if(e.key==="ArrowUp"){upDown=true;e.preventDefa
 addEventListener("keyup", e=>{ if(e.key==="ArrowUp")upDown=false; if(e.key==="ArrowDown")dnDown=false; });
 
 // ---------- 取樣即時輸入 ----------
+// 方向分類器本身對吐氣的辨識率比吸氣低(模型偏向判成吸氣),逐幀直接採用
+// 會讓吐氣類遊戲(氣球)很難被判定成功。所以只在氣球進行中,套用「短時間內
+// 只要出現過一次吐氣,就判定為吐氣」的偏向修正;憤怒鳥用的是吸氣,模型
+// 對吸氣本來就判得準,維持逐幀即時判斷、完全不套用這個修正。
+const EXHALE_BIAS_WINDOW = 0.4; // 氣球專用:這段時間內出現過吐氣就算吐氣(秒)
+let exhaleBiasBuffer = [];      // { t } 最近偵測到吐氣的時間戳記
+
 function sample(now, dt){
   const RAMP=240, DECAY=420, KMAX=150;
   upFlow = upDown ? Math.min(KMAX,upFlow+RAMP*dt) : Math.max(0,upFlow-DECAY*dt);
@@ -148,7 +155,20 @@ function sample(now, dt){
     if(upFlow>=dnFlow){ flow=upFlow; direction="inhalation"; }
     else { flow=dnFlow; direction="exhalation"; }
   } else if(now-lastTs<0.3 && lastFFT){
-    const a=analyze(lastFFT); if(a.active){ flow=a.flow; direction=a.direction; }
+    const a=analyze(lastFFT);
+    if(a.active){
+      flow=a.flow; direction=a.direction;
+      // 只有氣球在玩的時候,套用「短時間內出現過吐氣就判定吐氣」的偏向修正
+      if(current===GAMES.balloon){
+        if(direction==="exhalation") exhaleBiasBuffer.push({t:now});
+        exhaleBiasBuffer = exhaleBiasBuffer.filter(b=> now-b.t <= EXHALE_BIAS_WINDOW);
+        if(exhaleBiasBuffer.length>0) direction="exhalation";
+      }
+    } else {
+      exhaleBiasBuffer=[];
+    }
+  } else {
+    exhaleBiasBuffer=[];
   }
   const active = flow>=ONSET;
   const signed = direction==="inhalation"? flow : direction==="exhalation"? -flow : 0;
