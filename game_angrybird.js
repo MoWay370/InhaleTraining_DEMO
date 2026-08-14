@@ -1,13 +1,12 @@
-// 吸氣彈弓鳥 — 偵測吸氣流速(peak inhale)。吸氣時像拉彈弓一樣蓄力,
-// 吸氣結束(放開)那瞬間發射,蓄力越多飛越遠,把小鳥射去撞倒豬堡壘。
+// 吸氣彈弓鳥 — 偵測吸氣流速(單次爆發,peak inhale)。不用累積蓄力,
+// 一口氣裡吸得最用力的那一瞬間(peak flow)直接決定發射力道,
+// 力道越大飛越遠,吸氣結束(訊號回到安靜)就自動發射。
 const P = {
   ONSET: 10,          // 低於這個流速不算開始吸氣
-  MIN_LAUNCH: 14,      // 蓄力太少(幾乎沒吸)不會發射,提示重來
-  CHARGE_SCALE: 0.017, // 吸氣流速 -> 蓄力累積速度的比例
-  MAX_POWER: 1.0,      // 蓄力上限(正規化 0~1)
+  REF_MAX: 130,        // peak flow 達到這個值,力道視為 100%(可依裝置實測調整)
   GRAVITY: 620,
-  VX_SCALE: 620,       // 蓄力 1.0 時的水平初速
-  VY_SCALE: 460,       // 蓄力 1.0 時的垂直初速(往上)
+  VX_SCALE: 620,       // 力道 1.0 時的水平初速
+  VY_SCALE: 460,       // 力道 1.0 時的垂直初速(往上)
   GROUND_Y_RATIO: 0.82,
   TARGETS: [           // 豬堡壘,x 用畫面寬度比例表示,越遠分數越高
     { xr: 0.42, pts: 10, r: 22, hit: false, label: "近堡" },
@@ -21,8 +20,9 @@ function freshTargets(){ return P.TARGETS.map(t=>({...t, hit:false, knock:0})); 
 
 function reset(api){
   S = {
-    phase: "aim",           // aim(蓄力中) -> flight(飛行中) -> result(結算,等按鈕)
-    power: 0,               // 目前蓄力 0~1
+    phase: "aim",           // aim(等待吸氣) -> bursting(吸氣中,抓peak) -> flight(飛行中) -> result(結算,等按鈕)
+    peak: 0,                 // 這口氣目前偵測到的最高流速
+    power: 0,                 // 換算後的發射力道 0~1
     wrong: false,
     liveFlow: 0,
     bx: 0, by: 0, bvx: 0, bvy: 0, trail: [],
@@ -30,7 +30,7 @@ function reset(api){
     score: api.store.get("angrybird_score", 0),
     best: api.store.get("angrybird_best", 0),
     targets: freshTargets(),
-    msg: "深吸一口氣蓄力，放開就發射～",
+    msg: "深吸一口氣，吸得越用力飛越遠～",
     msgCol: api.colors.cream,
     shake: 0,
     lastHitLabel: null,
@@ -42,15 +42,16 @@ function primaryLabel(){
 }
 function primary(api){
   if(S.phase!=="result") return;
-  S.phase="aim"; S.power=0; S.trail=[]; S.msg="深吸一口氣蓄力，放開就發射～"; S.msgCol=api.colors.cream;
+  S.phase="aim"; S.peak=0; S.power=0; S.trail=[];
+  S.msg="深吸一口氣，吸得越用力飛越遠～"; S.msgCol=api.colors.cream;
   S.round += 1;
   if(S.targets.every(t=>t.hit)) S.targets = freshTargets(); // 全部打倒就重新擺一輪
 }
 
 function launch(api){
-  const pw = S.power;
-  S.bvx = P.VX_SCALE * pw;
-  S.bvy = -P.VY_SCALE * pw;
+  S.power = Math.max(0, Math.min(1, S.peak / P.REF_MAX));
+  S.bvx = P.VX_SCALE * S.power;
+  S.bvy = -P.VY_SCALE * S.power;
   S.phase = "flight";
   S.trail = [];
 }
@@ -61,16 +62,15 @@ function update(dt, input, api){
   if(S.phase==="aim"){
     if(input.direction==="inhalation" && input.flow>P.ONSET){
       S.liveFlow = input.flow;
-      S.power = Math.min(P.MAX_POWER, S.power + input.flow*P.CHARGE_SCALE*dt);
-      S.msg = S.power<0.4? "吸氣蓄力中…" : S.power<0.75? "力道不錯，再吸一點！" : "拉滿了！鬆口氣就發射～";
+      S.peak = Math.max(S.peak, input.flow); // 只記錄這口氣的最高瞬間值,不做時間累積
+      S.msg = "吸氣中…用力吸一大口！";
       S.msgCol = api.colors.gold;
     } else if(input.direction==="exhalation" && input.flow>P.ONSET){
       S.wrong = true;
-      S.msg = "這款要用「吸氣」蓄力喔～"; S.msgCol=api.colors.gold;
+      S.msg = "這款要用「吸氣」喔～"; S.msgCol=api.colors.gold;
     } else {
-      // 沒有訊號(安靜狀態) = 放開手 = 發射
-      if(S.power >= P.MIN_LAUNCH*P.CHARGE_SCALE*0.3 ){ /* no-op, replaced below */ }
-      if(S.power > 0.03){
+      // 沒有訊號(安靜狀態) = 這口氣結束 = 直接用剛剛的 peak 發射
+      if(S.peak > 0.01){
         launch(api);
       }
     }
@@ -102,9 +102,7 @@ function update(dt, input, api){
 
     if(S.by >= groundY || S.bx > w+40){
       S.phase = "result";
-      if(!S.lastHitLabelSetThisShot){
-        S.msg = "可惜，沒打中，再吸大力一點！"; S.msgCol=api.colors.cream;
-      }
+      S.msg = "可惜，沒打中，再吸大力一點！"; S.msgCol=api.colors.cream;
     }
     return;
   }
@@ -148,14 +146,14 @@ function render(g,w,h,api){
     }
   }
 
-  // 蓄力條(彈弓拉繩視覺化)
+  // 力道條(吸氣中即時顯示目前這口氣抓到的peak)
   if(S.phase==="aim"){
     const barX=slingX, barTop=slingY-90, barBot=slingY-10;
     g.rrect(barX-14,barTop,barX+14,barBot,8); g.fill(C.track); g.stroke(C.goldDk,2);
-    const fillY = barBot - (barBot-barTop)*S.power;
-    g.rrect(barX-10,fillY,barX+10,barBot-2,6); g.fill(S.power>0.75?C.gold:C.green);
-    // 拉弓的鳥(蓄力越多往後拉越多,同時往下沉一點模擬拉弦)
-    const pull = S.power*46;
+    const curPower = Math.max(0, Math.min(1, S.peak / P.REF_MAX));
+    const fillY = barBot - (barBot-barTop)*curPower;
+    g.rrect(barX-10,fillY,barX+10,barBot-2,6); g.fill(curPower>0.75?C.gold:C.green);
+    const pull = curPower*46;
     g.circle(slingX-pull*0.6, slingY+pull*0.5, 16, "#e6402f");
     g.circle(slingX-pull*0.6-6, slingY+pull*0.5-4, 4, "#2a0a10");
   }
@@ -175,8 +173,8 @@ function render(g,w,h,api){
 
   // 提示文字
   g.text(S.msg, w/2, 78, Math.min(24,w*0.03), S.msgCol);
-  if(S.wrong) g.text("記得是「吸氣」蓄力喔～", w/2, 108, 15, C.gold);
-  if(S.phase==="aim") g.text(`蓄力 ${Math.round(S.power*100)}%`, w/2, h-18, 15, C.cream);
+  if(S.wrong) g.text("記得是「吸氣」喔～", w/2, 108, 15, C.gold);
+  if(S.phase==="aim") g.text(`目前力道 ${Math.round(Math.min(1,S.peak/P.REF_MAX)*100)}%`, w/2, h-18, 15, C.cream);
   if(S.phase==="result") g.text("按「再射一次」繼續", w/2, h-18, 15, C.dim, "center", false);
   g.text(`個人最高單發 ${S.best} 分`, 18, h-14, 13, C.dim, "left", false);
 }
