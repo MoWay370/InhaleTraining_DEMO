@@ -43,7 +43,6 @@
   .card .tag{font-size:14px;font-weight:800;opacity:.7;}
   .card .desc{font-size:15px;line-height:1.5;font-weight:600;}
   .c1{background:linear-gradient(160deg,#ffd24a,#ffb03a);}
-  .c2{background:linear-gradient(160deg,#8fe0a0,#5fb0ff);}
   .c3{background:linear-gradient(160deg,#ffb0b0,#ff7a6a);}
   #bottom{margin-top:auto;}
   #bottom.hide{display:none;}
@@ -65,15 +64,10 @@
       <p>呼吸訓練遊戲廳</p>
       <h1>選一個遊戲開始</h1>
       <div class="cards">
-        <div class="card c1" data-game="bell">
-          <div class="tag">爆發力 · 吐氣</div>
-          <div class="big">🔔 敲鐘機</div>
-          <div class="desc">深吸一口氣，用力把氣吐出去，把秤砣打上去敲響金鐘。練最大氣力。</div>
-        </div>
-        <div class="card c2" data-game="rhythm">
-          <div class="tag">節奏 · 吸+吐</div>
-          <div class="big">🥁 呼吸節奏</div>
-          <div class="desc">跟著上下移動的標準線一吸一吐，對準了就得分。練呼吸節奏與協調。</div>
+        <div class="card c1" data-game="angrybird">
+          <div class="tag">爆發力 · 吸氣</div>
+          <div class="big">🐦 吸氣彈弓鳥</div>
+          <div class="desc">深吸一口氣蓄力，放開就發射，把小鳥射去撞倒豬堡壘。練最大吸氣流速。</div>
         </div>
         <div class="card c3" data-game="balloon">
           <div class="tag">耐力 · 持久吐氣</div>
@@ -93,11 +87,10 @@
 
 <script type="module">
 import { analyze, parseFFTLine, status as algoStatus } from "./breath_algorithm.js";
-import bell from "./game_bell.js";
-import rhythm from "./game_rhythm.js";
+import angrybird from "./game_angrybird.js";
 import balloon from "./game_balloon.js";
 
-const GAMES = { bell, rhythm, balloon };
+const GAMES = { angrybird, balloon };
 const ONSET = 12;
 
 // ---------- 顏色(給遊戲用) ----------
@@ -145,21 +138,68 @@ addEventListener("keydown", e=>{ if(e.key==="ArrowUp"){upDown=true;e.preventDefa
 addEventListener("keyup", e=>{ if(e.key==="ArrowUp")upDown=false; if(e.key==="ArrowDown")dnDown=false; });
 
 // ---------- 取樣即時輸入 ----------
+// 方向鎖定機制:裝置端每一幀的判定容易抖動(尤其在門檻附近),
+// 所以不逐幀直接採用。實測發現吸氣訊號比較容易被判定到、吐氣容易被蓋過去,
+// 所以規則改成:1 秒內只要出現任一幀吐氣,就立刻鎖定吐氣;
+// 完全沒偵測到吐氣、滿 1 秒了才鎖定吸氣。鎖定後整口氣維持同一個方向,
+// 直到訊號降回安靜狀態才解鎖、準備判定下一口氣。
+const DIR_LOCK_WINDOW = 1.0;   // 這口氣最多等多久做判定(秒)
+const QUIET_RESET_DELAY = 0.15; // 訊號降到安靜後,等多久才真正重置(避免瞬間掉值誤判成換氣)
+
+let dirBuffer = [];      // { t, direction } 這口氣目前收集到的樣本
+let lockedDir = null;    // 這口氣鎖定後的方向,null 代表還沒鎖定或正在安靜狀態
+let breathStartT = null; // 這口氣開始的時間點,null 代表還沒開始
+let quietSince = null;   // 開始安靜的時間點,null 代表目前還是 active
+
 function sample(now, dt){
   const RAMP=240, DECAY=420, KMAX=150;
   upFlow = upDown ? Math.min(KMAX,upFlow+RAMP*dt) : Math.max(0,upFlow-DECAY*dt);
   dnFlow = dnDown ? Math.min(KMAX,dnFlow+RAMP*dt) : Math.max(0,dnFlow-DECAY*dt);
-  let flow=0, direction=null;
-  // 鍵盤優先(試玩);否則用裝置
+
+  // 鍵盤試玩:維持原本的即時判斷,不套用鎖定邏輯(本來就是二選一,不會抖動)
   if(upFlow>1 || dnFlow>1){
+    dirBuffer=[]; lockedDir=null; breathStartT=null; quietSince=null;
+    let flow, direction;
     if(upFlow>=dnFlow){ flow=upFlow; direction="inhalation"; }
     else { flow=dnFlow; direction="exhalation"; }
-  } else if(now-lastTs<0.3 && lastFFT){
-    const a=analyze(lastFFT); if(a.active){ flow=a.flow; direction=a.direction; }
+    const active = flow>=ONSET;
+    const signed = direction==="inhalation"? flow : -flow;
+    return { flow, direction, active, signed, now, dt };
   }
-  const active = flow>=ONSET;
-  const signed = direction==="inhalation"? flow : direction==="exhalation"? -flow : 0;
-  return { flow, direction, active, signed, now, dt };
+
+  // 裝置路徑
+  if(now-lastTs<0.3 && lastFFT){
+    const a=analyze(lastFFT);
+    if(a.active){
+      quietSince=null; // 還在吹,取消安靜計時
+      if(lockedDir===null){
+        if(breathStartT===null) breathStartT=now;
+        dirBuffer.push({t:now, direction:a.direction});
+        if(a.direction==="exhalation"){
+          // 只要出現一幀吐氣,不用等滿 1 秒,立刻鎖定吐氣
+          lockedDir="exhalation";
+        } else if(now - breathStartT >= DIR_LOCK_WINDOW){
+          // 滿 1 秒都沒偵測到任何吐氣,鎖定吸氣
+          lockedDir="inhalation";
+        }
+      }
+      // 鎖定前:暫時顯示目前這一幀的判定,讓畫面不會空白;鎖定後固定用 lockedDir
+      const direction = lockedDir!==null ? lockedDir : a.direction;
+      const flow=a.flow;
+      const signed = direction==="inhalation"? flow : -flow;
+      return { flow, direction, active:true, signed, now, dt };
+    } else {
+      // 訊號降到安靜:先等一小段時間(避免瞬間掉值誤判),再真正重置成『下一口氣還沒開始』
+      if(quietSince===null) quietSince=now;
+      if(now - quietSince >= QUIET_RESET_DELAY){ dirBuffer=[]; lockedDir=null; breathStartT=null; }
+      return { flow:0, direction:null, active:false, signed:0, now, dt };
+    }
+  }
+
+  // 沒有裝置也沒按鍵:安靜狀態
+  if(quietSince===null) quietSince=now;
+  if(now - quietSince >= QUIET_RESET_DELAY){ dirBuffer=[]; lockedDir=null; breathStartT=null; }
+  return { flow:0, direction:null, active:false, signed:0, now, dt };
 }
 
 // ---------- 繪圖 helper ----------
