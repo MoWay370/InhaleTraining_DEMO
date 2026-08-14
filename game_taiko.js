@@ -36,28 +36,20 @@ function buildChart(){
   const notes = [];
   let t = 1.2;
 
-  // 第一段:點狀練習(先吐氣熱身幾下,再吸氣熱身幾下)
-  const pointGapExhale = 0.85;
-  for(let i=0;i<4;i++){ notes.push({type:"point", kind:"exhale", t}); t+=pointGapExhale; }
-  t += 0.8;
-  const pointGapInhale = 0.85;
-  for(let i=0;i<3;i++){ notes.push({type:"point", kind:"inhale", t}); t+=pointGapInhale; }
-  t += 1.4;
+  // 第一段:點狀熱身(只留 2 個,吐氣、吸氣各一次)
+  notes.push({type:"point", kind:"exhale", t}); t += 1.6;
+  notes.push({type:"point", kind:"inhale", t}); t += 1.8;
 
-  // 第二段:節奏訓練(跟原本一樣的長條,維持住時間比例)
-  const holdSeq = [
-    ["inhale", 2.0], ["exhale", 2.5],
-    ["inhale", 1.5], ["exhale", 3.0],
-    ["inhale", 2.0], ["exhale", 2.5],
-  ];
-  for(const [kind, dur] of holdSeq){
-    notes.push({type:"hold", kind, t, dur, end:t+dur, holdHit:0, judged:null});
-    t += dur + 1.4;
-  }
-  t += 1.0;
+  // 第二段:節奏熱身(只留 2 個長條,簡單帶過)
+  notes.push({type:"hold", kind:"inhale", t, dur:1.8, end:t+1.8, holdHit:0, judged:null});
+  t += 1.8 + 1.2;
+  notes.push({type:"hold", kind:"exhale", t, dur:2.0, end:t+2.0, holdHit:0, judged:null});
+  t += 2.0 + 1.6;
 
-  // 第三段:氣球挑戰(蓄力到滿才算過,不是撐時間)
+  // 第三段:氣球挑戰為主 —— 吐氣一輪、吸氣一輪
   notes.push({type:"balloon", kind:"exhale", t, dur:9, fill:0, judged:null});
+  t += 9 + 1.6;
+  notes.push({type:"balloon", kind:"inhale", t, dur:9, fill:0, judged:null});
   t += 9 + 1.0;
 
   return { notes, total: t };
@@ -72,7 +64,7 @@ function reset(api){
     score:0, combo:0, bestCombo:0, gauge:30,
     counts:{great:0, good:0, point:0, miss:0},
     flash:0, judgeText:null, judgeUntil:0, judgeCol:null,
-    liveFlow:0, stageLabel:"",
+    liveFlow:0, stageLabel:"", rings:[],
   };
 }
 function primaryLabel(){
@@ -114,6 +106,7 @@ function judgePoint(note, hit, api){
     S.combo++; S.bestCombo=Math.max(S.bestCombo,S.combo);
     S.score += SC_POINT; S.gauge=Math.min(100,S.gauge+GA_HIT);
     popJudge("好！", api.colors.gold, api);
+    S.rings.push({atJudgeLine:true, life:0.5, col:api.colors.gold});
   } else {
     S.combo=0; S.gauge=Math.max(0,S.gauge+GA_MISS*0.5);
     popJudge("漏拍", api.colors.dim, api);
@@ -167,7 +160,12 @@ function update(dt, input, api){
 
     else if(n.type==="hold"){
       if(n.t - HOLD_LEAD <= S.t && S.t <= n.end){
-        if(blowing){ n.holdHit = Math.min(n.dur, n.holdHit+dt); S.flash=1; }
+        if(blowing){
+          const wasZero = n.holdHit<=0.001;
+          n.holdHit = Math.min(n.dur, n.holdHit+dt);
+          S.flash=1;
+          if(wasZero) popJudge("抓住了！維持住～", api.colors.green, api);
+        }
       } else if(S.t > n.end + JUDGE_DELAY){
         judgeHold(n, api);
       }
@@ -181,8 +179,13 @@ function update(dt, input, api){
           const rate = ((frac-BALLOON_LO_FRAC)/(1-BALLOON_LO_FRAC)) * BALLOON_FILL_MAX;
           n.fill = Math.min(1, n.fill + rate*dt);
           S.flash=1;
+          n._liveMsg = n.fill>0.8? "快滿了！再撐一下！" : "蓄力中，很好！";
+        } else if(blowing){
+          n.fill = Math.max(0, n.fill - BALLOON_LEAK*dt);
+          n._liveMsg = "力道不夠，再更用力一點！";
         } else {
           n.fill = Math.max(0, n.fill - BALLOON_LEAK*dt);
+          n._liveMsg = null;
         }
         if(n.fill>=1.0){ judgeBalloon(n, api); } // 提早吹滿,馬上結算,不用等到段落結束
       } else if(S.t > end + JUDGE_DELAY){
@@ -191,6 +194,8 @@ function update(dt, input, api){
     }
   }
   S.flash = Math.max(0, S.flash - dt*4);
+  for(const r of S.rings) r.life -= dt;
+  S.rings = S.rings.filter(r=>r.life>0);
 }
 
 function render(g,w,h,api){
@@ -209,6 +214,13 @@ function render(g,w,h,api){
   g.line(0,bot,w,bot,"#39405f",1);
   if(S.flash>0.05){ g.ctx.globalAlpha=S.flash*0.5; g.rrect(judgeX-6,top,judgeX+6,bot,0); g.fill(C.gold); g.ctx.globalAlpha=1; }
   g.line(judgeX,top-10,judgeX,bot+10,C.cream,3);
+  // 點狀命中的擴散光環
+  for(const r of S.rings){
+    const age = 0.5-r.life;
+    g.ctx.globalAlpha=Math.max(0,r.life*2);
+    g.circle(judgeX, laneY, 20+age*60, r.col, false);
+    g.ctx.globalAlpha=1;
+  }
 
   // 魂條
   const gx0=60, gx1=w-60, gy=64;
@@ -223,9 +235,9 @@ function render(g,w,h,api){
   if(S.stageLabel) g.text(`【${S.stageLabel}】`, judgeX, top-24, 15, C.gold, "left", false);
 
   if(!S.running && !S.done){
-    g.text("三段式呼吸挑戰",w/2,laneY-30,28,C.cream);
-    g.text("① 點狀練習：快速點一下就好　② 節奏訓練：跟著長條維持住",w/2,laneY+10,15,C.dim,"center",false);
-    g.text("③ 氣球挑戰：要把力量蓄到滿才算過，不是撐時間",w/2,laneY+34,15,C.dim,"center",false);
+    g.text("呼吸太鼓：氣球為主",w/2,laneY-30,28,C.cream);
+    g.text("先來個熱身點、熱身長條，接著就是重頭戲——把氣球蓄到滿！",w/2,laneY+10,15,C.dim,"center",false);
+    g.text("氣球段：力道要夠大才會蓄力，越接近最大氣流蓄越快，蓄滿才算過關",w/2,laneY+34,15,C.dim,"center",false);
     return;
   }
 
@@ -272,7 +284,9 @@ function render(g,w,h,api){
       const fillW = (x1-x0)*n.fill;
       g.rrect(x0, cy-30, x0+Math.max(4,fillW), cy+30, 16);
       g.fill(n.fill>=1?C.gold:C.blue);
-      const label = active? `氣球 ${Math.round(n.fill*100)}%` : (n.judged? (n.judged==="great"?"氣球滿了！":n.judged==="good"?"半滿":"沒吹滿") : "吐氣把氣球吹滿");
+      const label = active
+        ? (n._liveMsg ? `${n._liveMsg}　${Math.round(n.fill*100)}%` : `${Math.round(n.fill*100)}%`)
+        : (n.judged? (n.judged==="great"?"氣球滿了！":n.judged==="good"?"半滿":"沒吹滿") : "吐氣把氣球吹滿");
       if(x1-x0>80) g.text(label,(x0+x1)/2, cy, 14, "#1b1f2e");
     }
   }
