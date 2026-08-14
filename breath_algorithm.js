@@ -1,37 +1,36 @@
 // =====================================================================
-//  breath_algorithm.js — 已凍結的呼吸聲學算法(可 import 的獨立模組)
+//  breath_algorithm.js — 由 breath_classifier.py 產生(結構與凍結版一致)
 // =====================================================================
 //  輸入:裝置只提供的 FFT 頻帶資料  bands = {1: e1, 2: e2, ... 20: e20}
 //  輸出:analyze(bands) -> { active, direction, flow, confidence }
 //
-//  設計原則:與遊戲 UI 完全脫鉤。遊戲只呼叫 analyze();要換更準的模型時,
-//  只改這支檔案裡的 MODEL 常數(凍結產物),遊戲一行都不用動。
-//
-//  MODEL 目前是「以物理為基礎的透明算法」(能量門檻 + 高低頻能量比 + 能量→流量代理)。
-//  等你用裝置實測資料訓練出係數,把 MODEL 換掉即可(格式見下)。
+//  係數由 fit_js_model_from_data() 從你的裝置實測 CSV 訓練資料擬合而來(見終端機輸出的擬合細節)。
+//  方向判定只使用 5~20kHz 頻帶(1~4kHz 對這個裝置沒有鑑別力,已排除)。
 // =====================================================================
 
 export const MODEL = {
-  version: "web-1.0",
+  version: "web-2.0-fitted-5to20",
   bands: [1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20],
 
-  // 是否「正在吹」:低頻總能量門檻
-  active: { minEnergy: 500000, lowBands: [1,2,3] },
+  // 是否「正在吹」:低頻總能量門檻(這裡的『低』指 5~20kHz 範圍內的低半段)
+  active: { minEnergy: 16227, lowBands: [5,6,7,8] },
 
-  // 方向判定:score>0 視為吐氣。沿用你原程式的 e3/e1,再加高/低頻能量比。
+  // 方向判定:score>0 視為吐氣。
+  // 用 numBand/denBand 這組頻帶比值(實測鑑別力最強),再加 5~20kHz 範圍內的高/低頻能量比。
   direction: {
-    wE3E1: 0.6, bE3E1: 0.8,          // 0.6*(e3/e1 - 0.8)
-    wHighLow: 0.4, bHighLow: 0.5,    // 0.4*(high/low - 0.5)
-    lowBands: [1,2,3],
-    highBands: [6,7,8,9,10,11,12,13,14,15,16,17,18,19,20],
+    numBand: 8, denBand: 9,
+    wRatio: 0.5734, bRatio: 2.0517,
+    wHighLow: 0.4266, bHighLow: 1.0246,
+    lowBands: [5,6,7,8],
+    highBands: [9,10,11,12,13,14,15,16,17,18,19,20],
   },
 
   // FFT 能量 -> 流量代理(遊戲會自我校準 baseline,所以「單調遞增」比絕對值重要)
   flow: {
-    weightBands: [1,2,3,4,5,6,7,8,9,10],  // 主要用中低頻能量
-    gain: 0.11,        // 整體增益
-    curve: "sqrt",     // sqrt / linear / log
-    energyScale: 1e6,  // 先把能量正規化到 ~O(1)
+    weightBands: [5,6,7,8,9,10,11,12,13,14],
+    gain: 0.1158,
+    curve: "sqrt",
+    energyScale: 1e6,
     max: 220,
   },
 };
@@ -45,14 +44,15 @@ function bandSum(bands, keys) {
 
 // ------- 特徵(訓練/推論共用,若日後接模型用得到) -------
 export function featurizeBands(bands) {
+  const D = MODEL.direction;
   const b = MODEL.bands.map((k) => bands[k] || 0);
   const total = b.reduce((a, x) => a + x, 0) + 1e-9;
   const logB = b.map((x) => Math.log1p(x));
   const centroid = b.reduce((a, x, i) => a + (i + 1) * x, 0) / total;
-  const low = bandSum(bands, MODEL.direction.lowBands) + 1e-9;
-  const high = bandSum(bands, MODEL.direction.highBands) + 1e-9;
-  const e3e1 = (bands[3] || 0) / ((bands[1] || 0) + 1e-9);
-  return [...logB, Math.log1p(total), centroid, e3e1, high / low];
+  const low = bandSum(bands, D.lowBands) + 1e-9;
+  const high = bandSum(bands, D.highBands) + 1e-9;
+  const ratio = (bands[D.numBand] || 0) / ((bands[D.denBand] || 0) + 1e-9);
+  return [...logB, Math.log1p(total), centroid, ratio, high / low];
 }
 
 // ------- 是否正在吹 -------
@@ -65,8 +65,8 @@ export function predictDirection(bands) {
   const D = MODEL.direction;
   const low = bandSum(bands, D.lowBands) + 1e-9;
   const high = bandSum(bands, D.highBands) + 1e-9;
-  const e3e1 = (bands[3] || 0) / ((bands[1] || 0) + 1e-9);
-  const score = D.wE3E1 * (e3e1 - D.bE3E1) + D.wHighLow * (high / low - D.bHighLow);
+  const ratio = (bands[D.numBand] || 0) / ((bands[D.denBand] || 0) + 1e-9);
+  const score = D.wRatio * (ratio - D.bRatio) + D.wHighLow * (high / low - D.bHighLow);
   const mode = score > 0 ? "exhalation" : "inhalation";
   const confidence = Math.max(0, Math.min(1, 0.5 + Math.abs(score) * 0.5));
   return { mode, confidence, score };
