@@ -43,6 +43,7 @@
   .card .tag{font-size:14px;font-weight:800;opacity:.7;}
   .card .desc{font-size:15px;line-height:1.5;font-weight:600;}
   .c1{background:linear-gradient(160deg,#ffd24a,#ffb03a);}
+  .c2{background:linear-gradient(160deg,#8fe0a0,#5fb0ff);}
   .c3{background:linear-gradient(160deg,#ffb0b0,#ff7a6a);}
   #bottom{margin-top:auto;}
   #bottom.hide{display:none;}
@@ -74,6 +75,11 @@
           <div class="big">🎈 吹氣球</div>
           <div class="desc">穩穩地把氣持續吐出去，讓氣球越吹越大，撐住就放飛。練持久力。</div>
         </div>
+        <div class="card c2" data-game="taiko">
+          <div class="tag">節奏 · 吸+吐</div>
+          <div class="big">🥁 呼吸太鼓</div>
+          <div class="desc">跟著長條吸氣、吐氣，顏色就是指令。整條吹好就是「良」。練呼吸節奏。</div>
+        </div>
       </div>
     </div>
   </div>
@@ -89,8 +95,9 @@
 import { analyze, parseFFTLine, status as algoStatus } from "./breath_algorithm.js";
 import angrybird from "./game_angrybird.js";
 import balloon from "./game_balloon.js";
+import taiko from "./game_taiko.js";
 
-const GAMES = { angrybird, balloon };
+const GAMES = { angrybird, balloon, taiko };
 const ONSET = 12;
 
 // ---------- 顏色(給遊戲用) ----------
