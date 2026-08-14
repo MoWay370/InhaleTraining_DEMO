@@ -1,5 +1,5 @@
 // 吹氣球 — 持久穩定吐氣(耐力)。穩穩地把氣持續吐出去,讓氣球越吹越大,撐住就放飛。
-const P = { ONSET:12, LO:16, HI:104, FILL_RATE:0.26, LEAK:0.34, HOLD_TARGET:1.0,
+const P = { ONSET:8, LO:10, HI:150, FILL_BASE:0.65, FILL_MAX:1.6, LEAK:0.16, HOLD_TARGET:1.0,
   WIN_SIZE:1.0, GENTLE:0.6 };
 
 let S;
@@ -21,14 +21,16 @@ function update(dt, input, api){
     S.sparkle=S.sparkle.filter(s=>s.life>0);
     if(S.flyY>1.4){ /* 等使用者按換一顆 */ } return; }
 
-  const inBand = flow>=P.LO && flow<=P.HI;
-  const tooWeak = flow>0 && flow<P.LO;
-  const tooStrong = flow>P.HI;
-  if(inBand){ S.size=Math.min(1, S.size + P.FILL_RATE*dt); S.inBand+=dt;
-    S.fb = flow<P.LO+25? "很好，穩穩地吹～" : "保持這個力道！"; S.fbCol=api.colors.green; }
-  else if(tooStrong){ S.size=Math.min(1,S.size+P.FILL_RATE*0.5*dt); S.inBand=0;
-    S.fb="太用力了，放輕鬆一點～"; S.fbCol=api.colors.gold; }
-  else { S.size=Math.max(0, S.size - P.LEAK*dt); if(tooWeak){ S.inBand=0; S.fb="再吹強一點，氣球才會脹～"; S.fbCol=api.colors.cream; } }
+  const blowing = flow>=P.LO;
+  if(blowing){
+    // 力道越大脹越快:在 LO~HI 之間,線性內插 FILL_BASE ~ FILL_MAX,超過 HI 就固定用 FILL_MAX(不再懲罰太用力)
+    const t = Math.max(0, Math.min(1, (flow-P.LO)/(P.HI-P.LO)));
+    const rate = P.FILL_BASE + (P.FILL_MAX-P.FILL_BASE)*t;
+    S.size=Math.min(1, S.size + rate*dt); S.inBand+=dt;
+    S.fb = t<0.3? "很好，繼續吹～" : t<0.7? "力道不錯，氣球快脹滿了！" : "全力衝刺！快好了！";
+    S.fbCol=api.colors.green;
+  }
+  else { S.size=Math.max(0, S.size - P.LEAK*dt); if(flow>0){ S.inBand=0; S.fb="再吹強一點，氣球才會脹～"; S.fbCol=api.colors.cream; } }
 
   S.hue=(S.hue+dt*40)%360;
   // 吹滿且穩住 -> 放飛
@@ -48,15 +50,17 @@ function render(g,w,h,api){
   g.text(`放飛 ${S.success} 顆`,w-18,25,15,C.gold,"right");
 
   const cx=w*0.5, groundY=h-70;
-  // 目標力道帶(左側直條)
+  // 力道條(左側直條):LO以上都算有效,越用力顏色越亮,不再有「太用力」的懲罰
   const mx=48, top=110, bot=h-90, span=bot-top;
   g.rrect(mx-16,top,mx+16,bot,10); g.fill(C.track); g.stroke(C.goldDk,2);
-  const yOf=(v)=> bot - Math.max(0,Math.min(1,v/160))*span;
-  // 綠色理想帶
-  g.ctx.globalAlpha=0.35; g.rrect(mx-14,yOf(P.HI),mx+14,yOf(P.LO),6); g.fill(C.green); g.ctx.globalAlpha=1;
-  const fv=S.liveFlow||0; g.rrect(mx-12,yOf(fv),mx+12,bot-2,8); g.fill(fv>=P.LO&&fv<=P.HI?C.green:C.redBr);
+  const yOf=(v)=> bot - Math.max(0,Math.min(1,v/P.HI))*span;
+  // 綠色有效帶:從 LO 往上到頂都算有效(力道越大越好)
+  g.ctx.globalAlpha=0.35; g.rrect(mx-14,top,mx+14,yOf(P.LO),6); g.fill(C.green); g.ctx.globalAlpha=1;
+  const fv=S.liveFlow||0;
+  const fvBarColor = fv>=P.LO ? C.green : C.redBr;
+  g.rrect(mx-12,yOf(fv),mx+12,bot-2,8); g.fill(fvBarColor);
   g.text("力道",mx,bot+16,12,C.dim);
-  g.text("穩定帶",mx+26,(yOf(P.LO)+yOf(P.HI))/2,12,C.green,"left");
+  g.text("越用力越快脹",mx+26,(top+yOf(P.LO))/2,12,C.green,"left");
 
   // 氣球
   const flyOff = S.flew? S.flyY*(groundY+120) : 0;
