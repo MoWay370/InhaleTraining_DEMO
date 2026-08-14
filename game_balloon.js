@@ -1,21 +1,29 @@
 // 吹氣球 — 持久穩定吐氣(耐力)。穩穩地把氣持續吐出去,讓氣球越吹越大,撐住就放飛。
 const P = { ONSET:8, LO:10, HI:150, FILL_BASE:1, FILL_MAX:3, LEAK:0.1, HOLD_TARGET:1.0,
-  WIN_SIZE:1.0, GENTLE:0.6 };
+  WIN_SIZE:1.0, GENTLE:0.6, SMOOTH_TAU:0.25 };
+// SMOOTH_TAU:flow 平滑化的時間常數(秒)。數字越大,反應越慢、越平滑;
+// 數字越小,越接近原始逐幀數值。只有氣球用這個平滑,憤怒鳥不套用。
 
 let S;
 function reset(api){
   S = { size:0, flew:false, flyY:0, success:api.store.get("balloon_best",0),
     inBand:0, fb:"深吸一口氣，穩穩地把氣吐出去～", fbCol:api.colors.cream,
-    steadyBonus:0, wrong:false, sparkle:[], hue:0, running:true };
+    steadyBonus:0, wrong:false, sparkle:[], hue:0, running:true, smoothFlow:0 };
 }
 function primaryLabel(){ return "換一顆氣球"; }
 function primary(api){ const b=S.success; reset(api); S.success=b; }
 
 function update(dt, input, api){
   // 只吃吐氣
-  let flow=0; S.wrong=false;
-  if(input.direction==="exhalation") flow=input.flow;
+  let rawFlow=0; S.wrong=false;
+  if(input.direction==="exhalation") rawFlow=input.flow;
   else if(input.direction==="inhalation" && input.flow>P.ONSET) S.wrong=true;
+
+  // 平滑化:用指數移動平均(EMA)把逐幀跳動的 flow 數值濾掉,
+  // alpha 依 dt 換算,讓平滑程度不受畫面更新頻率影響。
+  const alpha = 1 - Math.exp(-dt / P.SMOOTH_TAU);
+  S.smoothFlow += (rawFlow - S.smoothFlow) * alpha;
+  const flow = S.smoothFlow;
 
   if(S.flew){ S.flyY += dt*0.6; for(const s of S.sparkle){ s.life-=dt; s.y-=dt*40; }
     S.sparkle=S.sparkle.filter(s=>s.life>0);
