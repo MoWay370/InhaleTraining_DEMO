@@ -1,53 +1,78 @@
-// 呼吸太鼓 — 節奏版。畫面上的長條本身就是指令(紅=吸氣、藍=吐氣),
-// 玩家跟著長條吸吐。判定「刻意不用方向分類器的判斷結果」——
-// 分類器對吐氣的辨識率天生比吸氣低,如果拿它來判斷玩家吸還是吐,
-// 吐氣類的長條會很難過。所以這裡的規則簡化成:
-//   只要當下有氣流(flow >= ONSET),不管分類器說是吸氣還是吐氣,
-//   都直接算「吹對了」——長條本身(靠顏色跟文字)已經告訴玩家該吸還是吐,
-//   遊戲不需要再驗證方向是否正確,只需要確認玩家真的有在吹/吸。
+// 呼吸太鼓 — 三段式課表版。
+//   第一段「點狀練習」:快速點狀提示,吸一下/吐一下就好,熱身用。
+//   第二段「節奏訓練」:跟原本一樣的長條,維持住整條的時間比例來判定。
+//   第三段「氣球挑戰」:不是撐時間,而是像吹氣球一樣要把力量「蓄到滿」才算過關,
+//                       蓄力速度跟當下氣流大小成正比,越用力蓄越快。
+//
+// 判定原則(跟之前討論的一致):完全不看分類器判斷的「方向」,只看「有沒有氣流／
+// 氣流多大」。每個音符本身(顏色 + 文字)已經告訴玩家該吸氣還是吐氣,遊戲只確認
+// 玩家有沒有確實在吹/吸,不去驗證分類器判斷的方向對不對——這樣才不會被分類器
+// 對吐氣辨識率偏低的問題卡住。
 
-const ONSET = 12;
-const LEAD = 0.2;          // 長條開始前,提早這麼多秒就可以起算(寬容度)
-const JUDGE_DELAY = 0.25;  // 長條結束後,等這麼久才結算(讓最後幾幀資料進來)
+const ONSET = 12;           // 一般的「有氣流」門檻
+const POINT_THRESH = 20;     // 點狀音符要瞬間達到這個流速才算點中
+const POINT_WINDOW = [-0.25, 0.45]; // 點狀音符的判定窗(相對於音符時間點,秒)
+const HOLD_LEAD = 0.2;
+const JUDGE_DELAY = 0.25;
 const RATIO_GREAT = 0.70;
 const RATIO_GOOD = 0.35;
-const SCROLL_SPEED = 140;  // px/s
-const SC_GREAT = 300, SC_GOOD = 100;
-const GA_GREAT = 3.0, GA_GOOD = 1.2, GA_MISS = -4.0;
+const SCROLL_SPEED = 130;   // px/s
+
+const BALLOON_REF_MAX = 130;    // 氣球段:流速達到這個值,力道視為 100%
+const BALLOON_LO_FRAC = 0.5;    // 力道要超過 REF_MAX 的這個比例,才會開始蓄力(低於門檻只會消退)
+const BALLOON_FILL_MAX = 0.5;   // 全力(100%)時,每秒蓄力多少(0~1)
+const BALLOON_LEAK = 0.12;      // 沒吹 / 力道不夠門檻時,每秒消多少
+
+const SC_POINT = 80, SC_GREAT = 300, SC_GOOD = 100;
+const GA_HIT = 2.2, GA_MISS = -4.0, GA_GREAT = 3.0, GA_GOOD = 1.2;
+const GA_BALLOON_PASS = 12, GA_BALLOON_HALF = 4, GA_BALLOON_FAIL = -6;
 const GAUGE_CLEAR = 80;
 
-// 課表:(方向標籤, 目標流速僅供顯示, 秒數)。0 = 休息段,不產生音符。
-const PROGRAM = [
-  ["inhale", 0, 2],
-  ["inhale", 60, 2], ["inhale", 0, 2], ["exhale", 60, 3], ["inhale", 0, 2],
-  ["inhale", 60, 2], ["inhale", 0, 2], ["exhale", 60, 3], ["inhale", 0, 2],
-  ["inhale", 90, 1.5], ["inhale", 0, 2], ["exhale", 50, 5], ["inhale", 0, 2],
-  ["inhale", 120, 1], ["inhale", 0, 2], ["exhale", 100, 2], ["inhale", 0, 2],
-  ["inhale", 40, 3], ["inhale", 0, 2], ["exhale", 40, 4], ["inhale", 0, 2],
-  ["inhale", 30, 3], ["inhale", 0, 2], ["exhale", 30, 4], ["inhale", 0, 2],
-];
+// ---------------------------------------------------------------------
+// 課表:三段式。type: "point"(點狀) / "hold"(長條) / "balloon"(氣球段)
+// kind: "inhale" / "exhale" —— 只用來決定顏色跟提示文字,不影響判定邏輯。
+// ---------------------------------------------------------------------
+function buildChart(){
+  const notes = [];
+  let t = 1.2;
 
-function buildNotes(){
-  let t = 0; const notes = [];
-  for(const [kind, flow, dur] of PROGRAM){
-    if(flow > 0 && dur > 0){
-      notes.push({ t, dur, end: t+dur, kind, flow, holdHit:0, peak:0, judged:null });
-    }
-    t += dur;
+  // 第一段:點狀練習(先吐氣熱身幾下,再吸氣熱身幾下)
+  const pointGapExhale = 0.85;
+  for(let i=0;i<4;i++){ notes.push({type:"point", kind:"exhale", t}); t+=pointGapExhale; }
+  t += 0.8;
+  const pointGapInhale = 0.85;
+  for(let i=0;i<3;i++){ notes.push({type:"point", kind:"inhale", t}); t+=pointGapInhale; }
+  t += 1.4;
+
+  // 第二段:節奏訓練(跟原本一樣的長條,維持住時間比例)
+  const holdSeq = [
+    ["inhale", 2.0], ["exhale", 2.5],
+    ["inhale", 1.5], ["exhale", 3.0],
+    ["inhale", 2.0], ["exhale", 2.5],
+  ];
+  for(const [kind, dur] of holdSeq){
+    notes.push({type:"hold", kind, t, dur, end:t+dur, holdHit:0, judged:null});
+    t += dur + 1.4;
   }
+  t += 1.0;
+
+  // 第三段:氣球挑戰(蓄力到滿才算過,不是撐時間)
+  notes.push({type:"balloon", kind:"exhale", t, dur:9, fill:0, judged:null});
+  t += 9 + 1.0;
+
   return { notes, total: t };
 }
 
 let S, CHART;
 
 function reset(api){
-  CHART = buildNotes();
+  CHART = buildChart();
   S = {
     running:false, done:false, t:-1.0,
     score:0, combo:0, bestCombo:0, gauge:30,
-    counts:{great:0, good:0, miss:0},
+    counts:{great:0, good:0, point:0, miss:0},
     flash:0, judgeText:null, judgeUntil:0, judgeCol:null,
-    liveFlow:0,
+    liveFlow:0, stageLabel:"",
   };
 }
 function primaryLabel(){
@@ -57,7 +82,11 @@ function primary(api){
   reset(api); S.running=true; S.t=-1.0;
 }
 
-function judge(note, api){
+function popJudge(text, col, api){
+  S.judgeText=text; S.judgeCol=col; S.judgeUntil=S.t+0.6;
+}
+
+function judgeHold(note, api){
   const ratio = note.holdHit / Math.max(note.dur, 0.01);
   let result;
   if(ratio >= RATIO_GREAT) result="great";
@@ -65,20 +94,43 @@ function judge(note, api){
   else result="miss";
   note.judged = result;
   S.counts[result]++;
-
   if(result==="miss"){
     S.combo=0; S.gauge=Math.max(0,S.gauge+GA_MISS);
-    S.judgeText="不可"; S.judgeCol=api.colors.dim;
+    popJudge("不可", api.colors.dim, api);
   } else {
     S.combo++; S.bestCombo=Math.max(S.bestCombo,S.combo);
     const base = result==="great"? SC_GREAT : SC_GOOD;
-    const bonus = 1 + Math.min(S.combo,50)*0.01;
+    const bonus = 1+Math.min(S.combo,50)*0.01;
     S.score += Math.round(base*bonus);
     S.gauge = Math.min(100, S.gauge + (result==="great"?GA_GREAT:GA_GOOD));
-    S.judgeText = result==="great" ? "良" : "可";
-    S.judgeCol = result==="great" ? api.colors.gold : api.colors.green;
+    popJudge(result==="great"?"良":"可", result==="great"?api.colors.gold:api.colors.green, api);
   }
-  S.judgeUntil = S.t + 0.7;
+}
+
+function judgePoint(note, hit, api){
+  note.judged = hit ? "great" : "miss";
+  S.counts[hit?"point":"miss"]++;
+  if(hit){
+    S.combo++; S.bestCombo=Math.max(S.bestCombo,S.combo);
+    S.score += SC_POINT; S.gauge=Math.min(100,S.gauge+GA_HIT);
+    popJudge("好！", api.colors.gold, api);
+  } else {
+    S.combo=0; S.gauge=Math.max(0,S.gauge+GA_MISS*0.5);
+    popJudge("漏拍", api.colors.dim, api);
+  }
+}
+
+function judgeBalloon(note, api){
+  let result, gaugeDelta, scoreBase;
+  if(note.fill>=1.0){ result="great"; gaugeDelta=GA_BALLOON_PASS; scoreBase=SC_GREAT*2; }
+  else if(note.fill>=0.6){ result="good"; gaugeDelta=GA_BALLOON_HALF; scoreBase=SC_GOOD*1.5; }
+  else { result="miss"; gaugeDelta=GA_BALLOON_FAIL; scoreBase=0; }
+  note.judged=result;
+  S.counts[result==="great"?"great":result==="good"?"good":"miss"]++;
+  if(result==="miss"){ S.combo=0; popJudge("氣球沒吹滿", api.colors.dim, api); }
+  else { S.combo++; S.bestCombo=Math.max(S.bestCombo,S.combo); S.score+=Math.round(scoreBase);
+    popJudge(result==="great"?"氣球吹滿！":"氣球有到一半！", result==="great"?api.colors.gold:api.colors.green, api); }
+  S.gauge = Math.max(0, Math.min(100, S.gauge+gaugeDelta));
 }
 
 function update(dt, input, api){
@@ -86,23 +138,56 @@ function update(dt, input, api){
   if(!S.running) return;
 
   S.t += dt;
-  if(S.t > CHART.total + 1.5){
-    S.running=false; S.done=true; return;
-  }
+  if(S.t > CHART.total + 1.0){ S.running=false; S.done=true; return; }
 
-  // 核心規則:不管分類器判斷的方向是什麼,只看有沒有氣流
-  const blowing = (input.flow||0) >= ONSET;
+  const flow = input.flow||0;
+  const blowing = flow >= ONSET;
+
+  // 目前所在的段落標籤(給畫面顯示用)
+  let stage = "";
+  for(const n of CHART.notes){
+    if(n.type==="point" && Math.abs(S.t-n.t) < 1.2){ stage="點狀練習"; break; }
+    if(n.type==="hold" && S.t>=n.t-1 && S.t<=n.end+1){ stage="節奏訓練"; break; }
+    if(n.type==="balloon" && S.t>=n.t-1 && S.t<=n.t+n.dur+1){ stage="氣球挑戰"; break; }
+  }
+  S.stageLabel = stage;
 
   for(const n of CHART.notes){
     if(n.judged!==null) continue;
-    if(n.t - LEAD <= S.t && S.t <= n.end){
-      if(blowing){
-        n.holdHit = Math.min(n.dur, n.holdHit + dt);
-        n.peak = Math.max(n.peak, input.flow||0);
-        S.flash = 1;
+
+    if(n.type==="point"){
+      const rel = S.t - n.t;
+      if(rel < POINT_WINDOW[0]) continue;
+      if(rel <= POINT_WINDOW[1]){
+        if(flow >= POINT_THRESH){ judgePoint(n, true, api); S.flash=1; }
+      } else {
+        judgePoint(n, false, api);
       }
-    } else if(S.t > n.end + JUDGE_DELAY){
-      judge(n, api);
+    }
+
+    else if(n.type==="hold"){
+      if(n.t - HOLD_LEAD <= S.t && S.t <= n.end){
+        if(blowing){ n.holdHit = Math.min(n.dur, n.holdHit+dt); S.flash=1; }
+      } else if(S.t > n.end + JUDGE_DELAY){
+        judgeHold(n, api);
+      }
+    }
+
+    else if(n.type==="balloon"){
+      const end = n.t + n.dur;
+      if(S.t >= n.t && S.t <= end){
+        const frac = Math.min(1, flow/BALLOON_REF_MAX);
+        if(blowing && frac >= BALLOON_LO_FRAC){
+          const rate = ((frac-BALLOON_LO_FRAC)/(1-BALLOON_LO_FRAC)) * BALLOON_FILL_MAX;
+          n.fill = Math.min(1, n.fill + rate*dt);
+          S.flash=1;
+        } else {
+          n.fill = Math.max(0, n.fill - BALLOON_LEAK*dt);
+        }
+        if(n.fill>=1.0){ judgeBalloon(n, api); } // 提早吹滿,馬上結算,不用等到段落結束
+      } else if(S.t > end + JUDGE_DELAY){
+        judgeBalloon(n, api);
+      }
     }
   }
   S.flash = Math.max(0, S.flash - dt*4);
@@ -115,15 +200,13 @@ function render(g,w,h,api){
   g.text(`分數 ${S.score}　連段 ${S.combo}`,w-18,18,15,C.gold,"right");
   g.text(`最佳連段 ${S.bestCombo}`,w-18,38,13,C.dim,"right",false);
 
-  const laneY = h*0.42, laneH = 60, judgeX = w*0.16;
+  const laneY = h*0.40, laneH = 55, judgeX = w*0.16;
   const top=laneY-laneH, bot=laneY+laneH;
 
-  // 跑道
   g.rrect(0,top,w,bot,0); g.fill(C.track);
   g.ctx.globalAlpha=0.4; g.rrect(0,top,judgeX,bot,0); g.fill(C.panel); g.ctx.globalAlpha=1;
   g.line(0,top,w,top,"#39405f",1);
   g.line(0,bot,w,bot,"#39405f",1);
-  // 判定線
   if(S.flash>0.05){ g.ctx.globalAlpha=S.flash*0.5; g.rrect(judgeX-6,top,judgeX+6,bot,0); g.fill(C.gold); g.ctx.globalAlpha=1; }
   g.line(judgeX,top-10,judgeX,bot+10,C.cream,3);
 
@@ -137,50 +220,81 @@ function render(g,w,h,api){
   g.line(clearX,gy-14,clearX,gy+14,C.cream,2);
   g.text(`${Math.round(S.gauge)}%`,gx1+14,gy,14,C.cream,"left");
 
+  if(S.stageLabel) g.text(`【${S.stageLabel}】`, judgeX, top-24, 15, C.gold, "left", false);
+
   if(!S.running && !S.done){
-    g.text("跟著長條吸氣、吐氣",w/2,laneY-24,28,C.cream);
-    g.text("紅色長條＝吸氣　藍色長條＝吐氣　整條吹好就是「良」",w/2,laneY+20,16,C.dim,"center",false);
-    g.text("判定只看你有沒有在吹/吸，不管方向對不對，跟著顏色做就好",w/2,laneY+48,14,C.dim,"center",false);
+    g.text("三段式呼吸挑戰",w/2,laneY-30,28,C.cream);
+    g.text("① 點狀練習：快速點一下就好　② 節奏訓練：跟著長條維持住",w/2,laneY+10,15,C.dim,"center",false);
+    g.text("③ 氣球挑戰：要把力量蓄到滿才算過，不是撐時間",w/2,laneY+34,15,C.dim,"center",false);
     return;
   }
 
-  // 音符
+  // 音符渲染
   for(const n of CHART.notes){
-    const x0 = judgeX + (n.t - S.t)*SCROLL_SPEED;
-    const x1 = judgeX + (n.end - S.t)*SCROLL_SPEED;
-    if(x1 < -40 || x0 > w+40) continue;
     const isInhale = n.kind==="inhale";
     let base = isInhale? C.redBr : C.blue;
-    if(n.judged==="miss") base = "#5c6280";
-    g.rrect(x0,laneY-26,x1,laneY+26,14); g.fill(base);
-    if(n.holdHit>0){
-      const fx = x0 + (n.holdHit/n.dur)*(x1-x0);
-      g.rrect(x0,laneY-26,fx,laneY+26,14); g.fill(C.gold);
+
+    if(n.type==="point"){
+      const x = judgeX + (n.t - S.t)*SCROLL_SPEED;
+      if(x < -40 || x > w+40) continue;
+      let col = base;
+      if(n.judged==="great") col = C.gold;
+      else if(n.judged==="miss") col = "#5c6280";
+      g.circle(x, laneY, 20, col);
+      g.stroke(C.goldDk,2);
+      const label = isInhale? "吸" : "吐";
+      g.text(label, x, laneY, 15, "#1b1f2e");
     }
-    g.stroke(C.goldDk,2);
-    const label = isInhale? "吸氣" : "吐氣";
-    if(x1-x0 > 46) g.text(label,(x0+x1)/2,laneY,15,"#1b1f2e");
+
+    else if(n.type==="hold"){
+      const x0 = judgeX + (n.t - S.t)*SCROLL_SPEED;
+      const x1 = judgeX + (n.end - S.t)*SCROLL_SPEED;
+      if(x1 < -40 || x0 > w+40) continue;
+      let col = base;
+      if(n.judged==="miss") col = "#5c6280";
+      g.rrect(x0,laneY-24,x1,laneY+24,14); g.fill(col);
+      if(n.holdHit>0){
+        const fx = x0 + (n.holdHit/n.dur)*(x1-x0);
+        g.rrect(x0,laneY-24,fx,laneY+24,14); g.fill(C.gold);
+      }
+      g.stroke(C.goldDk,2);
+      if(x1-x0>46) g.text(isInhale?"吸氣":"吐氣", (x0+x1)/2, laneY, 14, "#1b1f2e");
+    }
+
+    else if(n.type==="balloon"){
+      const x0 = judgeX + (n.t - S.t)*SCROLL_SPEED;
+      const x1 = judgeX + ((n.t+n.dur) - S.t)*SCROLL_SPEED;
+      if(x1 < -60 || x0 > w+60) continue;
+      const cy = laneY;
+      const active = S.t>=n.t && S.t<=n.t+n.dur && n.judged===null;
+      // 底槽
+      g.rrect(x0, cy-30, x1, cy+30, 16); g.fill(C.track); g.stroke(C.goldDk,2);
+      const fillW = (x1-x0)*n.fill;
+      g.rrect(x0, cy-30, x0+Math.max(4,fillW), cy+30, 16);
+      g.fill(n.fill>=1?C.gold:C.blue);
+      const label = active? `氣球 ${Math.round(n.fill*100)}%` : (n.judged? (n.judged==="great"?"氣球滿了！":n.judged==="good"?"半滿":"沒吹滿") : "吐氣把氣球吹滿");
+      if(x1-x0>80) g.text(label,(x0+x1)/2, cy, 14, "#1b1f2e");
+    }
   }
 
-  // 目前流速表
+  // 即時流速
   const mx0=judgeX, mx1=w-40, my=h*0.72;
   g.text("即時氣流",mx0,my-18,13,C.dim,"left",false);
   g.rrect(mx0,my,mx1,my+22,8); g.fill(C.track);
   const frac=Math.min(1,(S.liveFlow||0)/150);
-  if(frac>0.02) g.rrect(mx0,my,mx0+(mx1-mx0)*frac,my+22,8); g.fill(C.gold);
+  if(frac>0.02){ g.rrect(mx0,my,mx0+(mx1-mx0)*frac,my+22,8); g.fill(C.gold); }
   g.text(`${Math.round(S.liveFlow||0)}`,mx1+14,my+11,14,C.cream,"left");
 
-  // 判定字浮出
   if(S.judgeText && S.t < S.judgeUntil){
-    const age = 0.7-(S.judgeUntil-S.t);
-    g.text(S.judgeText, judgeX, laneY-70-age*40, 30, S.judgeCol);
+    const age = 0.6-(S.judgeUntil-S.t);
+    g.text(S.judgeText, judgeX, laneY-70-age*40, 26, S.judgeCol);
   }
 
   if(S.done){
     g.text("演奏結束！",w/2,laneY-30,32,C.gold);
     const passed = S.gauge>=GAUGE_CLEAR;
     g.text(passed? "合格 🎉" : "再挑戰一次！",w/2,laneY+6,20,passed?C.green:C.redBr);
-    g.text(`良 ${S.counts.great}　可 ${S.counts.good}　不可 ${S.counts.miss}`,w/2,laneY+36,15,C.cream,"center",false);
+    g.text(`良 ${S.counts.great||0}　可 ${S.counts.good||0}　點中 ${S.counts.point||0}　不可 ${S.counts.miss||0}`,w/2,laneY+36,14,C.cream,"center",false);
   }
 }
 
