@@ -243,7 +243,7 @@ tbody.addEventListener("click", (e)=>{
 });
 document.getElementById("exportAllBtn").onclick = downloadAll;
 
-
+function fmtTime(ts){
   const d = new Date(ts);
   return d.toLocaleString("zh-TW", { hour12:false });
 }
