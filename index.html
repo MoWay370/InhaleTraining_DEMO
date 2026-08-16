@@ -255,18 +255,57 @@ function startGame(id){
   primary.textContent = current.primaryLabel? (current.primaryLabel()||"") : "";
   primary.style.display = primary.textContent? "" : "none";
   resize();
+  segActive=false; segSamples=[]; // 切換遊戲時重置波形紀錄，避免跨遊戲混在一起
   uploadLog({ type:"game_start", game:id });
 }
-function toHub(){ current=null; currentId=null; hub.style.display="flex"; bottom.classList.add("hide"); }
+function toHub(){ current=null; currentId=null; hub.style.display="flex"; bottom.classList.add("hide");
+  segActive=false; segSamples=[]; }
 function onPrimary(){ if(current && current.primary){ current.primary(api);
   if(current.primaryLabel){ const t=current.primaryLabel()||""; primary.textContent=t;
     primary.style.display=t?"":"none"; } } }
+
+// ---------- 波形紀錄(新增) ----------
+// 不改動遊戲檔案本身，直接在這裡監看每一幀的 flow，偵測「開始有氣流 → 持續 → 停止」
+// 這樣一段完整的呼吸動作，結束時把整段 flow-time 序列打包上傳(type:"attempt")。
+// 好處：連失敗的嘗試也會被記下來，三個遊戲檔案完全不用改。
+const SEG_MIN_DURATION = 0.15; // 太短的雜訊不上傳(秒)
+const SEG_MAX_POINTS = 150;    // 單筆序列最多留幾個點(超過就等距抽樣)
+let segActive=false, segStart=0, segSamples=[];
+
+function downsample(arr, maxPoints){
+  if(arr.length<=maxPoints) return arr;
+  const stride = arr.length/maxPoints;
+  const out=[];
+  for(let i=0;i<maxPoints;i++) out.push(arr[Math.floor(i*stride)]);
+  return out;
+}
+
+function handleSegment(input){
+  if(!current) { segActive=false; segSamples=[]; return; } // 沒在玩遊戲時不記錄
+  if(input.active){
+    if(!segActive){ segActive=true; segStart=input.now; segSamples=[]; }
+    segSamples.push({
+      t:+(input.now-segStart).toFixed(2),                 // 相對時間(秒)
+      f:Math.round(input.flow),                             // 流量(任意單位，跟遊戲內部一致)
+      d:input.direction==="inhalation"?1:input.direction==="exhalation"?-1:0, // 1=吸氣 -1=吐氣
+    });
+  } else if(segActive){
+    segActive=false;
+    const duration = input.now - segStart;
+    if(duration>=SEG_MIN_DURATION && segSamples.length>0){
+      uploadLog({ type:"attempt", game:currentId, duration:+duration.toFixed(2),
+        series: downsample(segSamples, SEG_MAX_POINTS) });
+    }
+    segSamples=[];
+  }
+}
 
 // ---------- 主迴圈 ----------
 let last=performance.now()/1000;
 function loop(){
   const now=performance.now()/1000; let dt=Math.min(now-last,0.1); last=now;
   const input=sample(now,dt);
+  handleSegment(input);
   const w=cv.clientWidth, h=cv.clientHeight;
   if(current){
     if(current.update) current.update(dt,input,api);
