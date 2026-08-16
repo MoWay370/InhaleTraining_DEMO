@@ -1,0 +1,173 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>訓練紀錄後台</title>
+<style>
+  :root{
+    --bg:#43111a; --panel:#5c1a26; --header:#370d14; --track:#2c0910;
+    --gold:#ffd24a; --gold-dk:#b8862a; --red:#e6402f; --red-br:#ff6a52;
+    --cream:#fff3df; --green:#7fe08d; --blue:#5fb0ff; --dim:#e0b58f;
+  }
+  *{box-sizing:border-box;}
+  body{margin:0;background:var(--bg);color:var(--cream);
+    font-family:"Microsoft JhengHei UI","PingFang TC","Noto Sans TC",sans-serif;}
+  header{background:var(--header);padding:16px 24px;display:flex;align-items:center;gap:16px;flex-wrap:wrap;}
+  header h1{font-size:20px;margin:0;color:var(--gold);}
+  main{padding:20px 24px;max-width:1200px;margin:0 auto;}
+  .controls{display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-bottom:18px;}
+  input, select{font-family:inherit;background:var(--panel);color:var(--cream);border:none;
+    border-radius:8px;padding:8px 10px;font-size:14px;}
+  button{font-family:inherit;background:var(--gold);color:#3a0a10;border:none;border-radius:8px;
+    padding:9px 16px;font-weight:700;cursor:pointer;}
+  button:active{transform:translateY(1px);}
+  .stat-cards{display:flex;gap:12px;flex-wrap:wrap;margin-bottom:20px;}
+  .stat{background:var(--panel);border-radius:12px;padding:14px 18px;min-width:140px;}
+  .stat .num{font-size:26px;font-weight:800;color:var(--gold);}
+  .stat .label{font-size:13px;color:var(--dim);}
+  table{width:100%;border-collapse:collapse;background:var(--panel);border-radius:12px;overflow:hidden;}
+  th,td{text-align:left;padding:10px 12px;font-size:13px;border-bottom:1px solid rgba(255,255,255,.06);}
+  th{background:var(--header);color:var(--dim);font-weight:700;position:sticky;top:0;}
+  tr:hover td{background:rgba(255,255,255,.03);}
+  .tag{display:inline-block;padding:2px 8px;border-radius:6px;font-size:12px;font-weight:700;}
+  .tag-score{background:var(--gold);color:#3a0a10;}
+  .tag-connect{background:var(--green);color:#0a2a10;}
+  .tag-disconnect{background:var(--red-br);color:#3a0a10;}
+  .tag-game_start{background:var(--blue);color:#0a1a3a;}
+  #msg{color:var(--dim);font-size:14px;margin:10px 0;}
+  .empty{padding:40px;text-align:center;color:var(--dim);}
+  .best-section{margin-top:28px;}
+  .best-section h2{font-size:16px;color:var(--gold);}
+</style>
+</head>
+<body>
+<header>
+  <h1>🌬 呼吸訓練紀錄後台</h1>
+</header>
+<main>
+  <div class="controls">
+    <label>天數</label>
+    <select id="days">
+      <option value="1">今天</option>
+      <option value="7" selected>最近 7 天</option>
+      <option value="30">最近 30 天</option>
+      <option value="90">最近 90 天</option>
+    </select>
+    <label>使用者姓名/編號</label>
+    <input id="nameFilter" placeholder="留空 = 全部" size="12" />
+    <button id="refreshBtn">重新整理</button>
+  </div>
+
+  <div id="msg"></div>
+
+  <div class="stat-cards" id="statCards"></div>
+
+  <table id="tbl">
+    <thead>
+      <tr>
+        <th>時間</th><th>使用者</th><th>事件</th><th>遊戲</th><th>項目</th><th>數值</th>
+      </tr>
+    </thead>
+    <tbody id="tbody"></tbody>
+  </table>
+
+  <div class="best-section">
+    <h2>各使用者最佳成績</h2>
+    <table id="bestTbl">
+      <thead><tr><th>使用者</th><th>項目</th><th>最佳值</th></tr></thead>
+      <tbody id="bestTbody"></tbody>
+    </table>
+  </div>
+</main>
+
+<script>
+const daysEl = document.getElementById("days");
+const nameFilterEl = document.getElementById("nameFilter");
+const refreshBtn = document.getElementById("refreshBtn");
+const msgEl = document.getElementById("msg");
+const tbody = document.getElementById("tbody");
+const bestTbody = document.getElementById("bestTbody");
+const statCards = document.getElementById("statCards");
+
+const GAME_LABEL = { angrybird:"吸氣彈弓鳥", balloon:"吹氣球", taiko:"呼吸太鼓" };
+const TYPE_LABEL = { score:"成績", connect:"連線", disconnect:"斷線", game_start:"開始遊戲" };
+const TYPE_CLASS = { score:"tag-score", connect:"tag-connect", disconnect:"tag-disconnect", game_start:"tag-game_start" };
+
+function fmtTime(ts){
+  const d = new Date(ts);
+  return d.toLocaleString("zh-TW", { hour12:false });
+}
+
+async function load(){
+  msgEl.textContent = "載入中...";
+  tbody.innerHTML = "";
+  bestTbody.innerHTML = "";
+  statCards.innerHTML = "";
+
+  const days = daysEl.value;
+  const name = nameFilterEl.value.trim();
+  const params = new URLSearchParams({ days, best:"1" });
+  if(name) params.set("name", name);
+
+  try{
+    const res = await fetch("/api/view?" + params.toString());
+    if(!res.ok){
+      const err = await res.json().catch(()=>({}));
+      throw new Error(err.message || ("HTTP " + res.status));
+    }
+    const data = await res.json();
+    msgEl.textContent = `共 ${data.count} 筆事件`;
+
+    // 統計卡片
+    const uniqueUsers = new Set(data.records.map(r=>r.name)).size;
+    const scoreCount = data.records.filter(r=>r.type==="score").length;
+    const gameStartCount = data.records.filter(r=>r.type==="game_start").length;
+    statCards.innerHTML = `
+      <div class="stat"><div class="num">${data.count}</div><div class="label">總事件數</div></div>
+      <div class="stat"><div class="num">${uniqueUsers}</div><div class="label">使用者數</div></div>
+      <div class="stat"><div class="num">${gameStartCount}</div><div class="label">開始遊戲次數</div></div>
+      <div class="stat"><div class="num">${scoreCount}</div><div class="label">成績紀錄數</div></div>
+    `;
+
+    if(data.records.length === 0){
+      tbody.innerHTML = `<tr><td colspan="6" class="empty">這個區間沒有資料</td></tr>`;
+    } else {
+      tbody.innerHTML = data.records.map(r => `
+        <tr>
+          <td>${fmtTime(r.ts)}</td>
+          <td>${r.name || "-"}</td>
+          <td><span class="tag ${TYPE_CLASS[r.type]||''}">${TYPE_LABEL[r.type]||r.type}</span></td>
+          <td>${GAME_LABEL[r.game]||r.game||"-"}</td>
+          <td>${r.key||"-"}</td>
+          <td>${r.value ?? "-"}</td>
+        </tr>
+      `).join("");
+    }
+
+    if(data.best && Object.keys(data.best).length>0){
+      let rows = [];
+      for(const [user, kvs] of Object.entries(data.best)){
+        for(const [k,v] of Object.entries(kvs||{})){
+          rows.push(`<tr><td>${user}</td><td>${k}</td><td>${v}</td></tr>`);
+        }
+      }
+      bestTbody.innerHTML = rows.length ? rows.join("") : `<tr><td colspan="3" class="empty">無資料</td></tr>`;
+    } else {
+      bestTbody.innerHTML = `<tr><td colspan="3" class="empty">無資料</td></tr>`;
+    }
+
+  }catch(err){
+    msgEl.textContent = "載入失敗: " + err.message;
+    console.error(err);
+  }
+}
+
+refreshBtn.onclick = load;
+daysEl.onchange = load;
+nameFilterEl.addEventListener("keydown", e=>{ if(e.key==="Enter") load(); });
+
+load();
+</script>
+</body>
+</html>
