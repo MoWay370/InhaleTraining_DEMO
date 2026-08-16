@@ -25,7 +25,6 @@ function getRedis() {
     }
     redis = new Redis(process.env.REDIS_URL, {
       maxRetriesPerRequest: 3,
-      enableOfflineQueue: false,
     });
   }
   return redis;
