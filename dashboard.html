@@ -12,6 +12,7 @@
     --green:#1f9d63; --green-lt:#e5f7ee;
     --red:#d64545; --red-lt:#fbe8e8;
     --amber:#c98a13; --amber-lt:#fbf1de;
+    --teal:#0e8f8f; --teal-lt:#e3f7f7;
     --radius:12px;
   }
   *{box-sizing:border-box;}
@@ -78,6 +79,8 @@
   .tag-connect{background:var(--green-lt);color:var(--green);}
   .tag-disconnect{background:var(--red-lt);color:var(--red);}
   .tag-game_start{background:var(--amber-lt);color:var(--amber);}
+  .tag-attempt{background:var(--teal-lt);color:var(--teal);}
+  .spark{display:block;}
   #msg{color:var(--dim);font-size:13px;margin:0 0 16px;}
   .empty{padding:40px;text-align:center;color:var(--dim-lt);}
 </style>
@@ -127,10 +130,10 @@
     <div class="stat-cards" id="statCards"></div>
 
     <div class="section">
-      <h2>事件明細</h2>
+      <h2>事件明細 <span style="font-weight:400;color:var(--dim);font-size:12px;">（波形數值單位：L/min，來自裝置聲學流量估計模型）</span></h2>
       <table id="tbl">
         <thead>
-          <tr><th>時間</th><th>使用者</th><th>事件</th><th>遊戲</th><th>項目</th><th>數值</th></tr>
+          <tr><th>時間</th><th>使用者</th><th>事件</th><th>遊戲</th><th>項目</th><th>數值</th><th>波形</th></tr>
         </thead>
         <tbody id="tbody"></tbody>
       </table>
@@ -164,8 +167,32 @@ const bestTbody = document.getElementById("bestTbody");
 const statCards = document.getElementById("statCards");
 
 const GAME_LABEL = { angrybird:"吸氣彈弓鳥", balloon:"吹氣球", taiko:"呼吸太鼓" };
-const TYPE_LABEL = { score:"成績", connect:"連線", disconnect:"斷線", game_start:"開始遊戲" };
-const TYPE_CLASS = { score:"tag-score", connect:"tag-connect", disconnect:"tag-disconnect", game_start:"tag-game_start" };
+const TYPE_LABEL = { score:"成績", connect:"連線", disconnect:"斷線", game_start:"開始遊戲", attempt:"呼吸波形" };
+const TYPE_CLASS = { score:"tag-score", connect:"tag-connect", disconnect:"tag-disconnect", game_start:"tag-game_start", attempt:"tag-attempt" };
+
+// 畫一個小型 flow-time 折線圖(SVG)，series: [{t,f,d}, ...]
+function sparkline(series){
+  if(!series || !series.length) return "-";
+  const w=130, h=34, pad=3;
+  const maxF = Math.max(10, ...series.map(p=>Math.abs(p.f)));
+  const n = series.length;
+  const stepX = n>1 ? (w-pad*2)/(n-1) : 0;
+  const midY = h/2;
+  let d = series.map((p,i)=>{
+    const x = (pad + i*stepX).toFixed(1);
+    const signedF = p.f * (p.d||1);
+    const y = (midY - (signedF/maxF)*(midY-pad)).toFixed(1);
+    return (i===0?"M":"L") + x + "," + y;
+  }).join(" ");
+  return `<svg class="spark" width="${w}" height="${h}" viewBox="0 0 ${w} ${h}">
+    <line x1="${pad}" y1="${midY}" x2="${w-pad}" y2="${midY}" stroke="#e1e8f0" stroke-width="1"/>
+    <path d="${d}" fill="none" stroke="#1a6fd6" stroke-width="1.6" stroke-linejoin="round" stroke-linecap="round"/>
+  </svg>`;
+}
+function peakFlow(series){
+  if(!series || !series.length) return null;
+  return Math.max(...series.map(p=>Math.abs(p.f)));
+}
 
 function fmtTime(ts){
   const d = new Date(ts);
@@ -242,18 +269,24 @@ async function load(){
     `;
 
     if(data.records.length === 0){
-      tbody.innerHTML = `<tr><td colspan="6" class="empty">這個區間沒有資料</td></tr>`;
+      tbody.innerHTML = `<tr><td colspan="7" class="empty">這個區間沒有資料</td></tr>`;
     } else {
-      tbody.innerHTML = data.records.map(r => `
+      tbody.innerHTML = data.records.map(r => {
+        const isAttempt = r.type === "attempt";
+        const item = isAttempt ? `持續 ${r.duration ?? "-"} 秒` : (r.key || "-");
+        const val = isAttempt ? (peakFlow(r.series) ?? "-") : (r.value ?? "-");
+        const spark = isAttempt ? sparkline(r.series) : "-";
+        return `
         <tr>
           <td>${fmtTime(r.ts)}</td>
           <td>${r.name || "-"}</td>
           <td><span class="tag ${TYPE_CLASS[r.type]||''}">${TYPE_LABEL[r.type]||r.type}</span></td>
           <td>${GAME_LABEL[r.game]||r.game||"-"}</td>
-          <td>${r.key||"-"}</td>
-          <td>${r.value ?? "-"}</td>
-        </tr>
-      `).join("");
+          <td>${item}</td>
+          <td>${val}${isAttempt && val!=="-" ? " L/min (峰值)" : ""}</td>
+          <td>${spark}</td>
+        </tr>`;
+      }).join("");
     }
 
     if(data.best && Object.keys(data.best).length>0){
