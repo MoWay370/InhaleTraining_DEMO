@@ -38,7 +38,8 @@ export default async function handler(req, res) {
 
   try {
     const body = req.body || {};
-    const { name, type, game, key, value, ts } = body;
+    // duration/series 是 type==="attempt"（單次呼吸波形）才會有的欄位
+    const { name, type, game, key, value, ts, duration, series } = body;
 
     if (!type) {
       return res.status(400).json({ error: "missing type" });
@@ -51,6 +52,9 @@ export default async function handler(req, res) {
       key: key || null,
       value: value ?? null,
       ts: Number.isFinite(ts) ? ts : Date.now(),
+      duration: Number.isFinite(duration) ? duration : null,
+      // 序列資料做上限保護，避免單筆過大（每點只留 t 秒數、f 流量、d 方向）
+      series: Array.isArray(series) ? series.slice(0, 300) : null,
     };
 
     const dateStr = new Date(record.ts).toISOString().slice(0, 10);
